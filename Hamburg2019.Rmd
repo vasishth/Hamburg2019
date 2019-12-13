@@ -1,0 +1,216 @@
+---
+title: "Reproducible code for the data visualizations from the Hamburg 2019 talk"
+author: "Shravan Vasishth"
+date: "12/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(gganimate)
+library(ggridges)
+```
+
+For accompanying slides (keynote and pdf), see: https://osf.io/p8amv/
+
+# Demonstrating Type M error
+
+## Low power situation
+
+```{r  typemdemo}
+set.seed(987654321)
+d<-20
+sd<-150
+lown<-power.t.test(d=d,sd=sd,power=.10,type="one.sample",alternative="two.sided",strict=TRUE)$n
+highn<-power.t.test(d=d,sd=sd,power=.80,type="one.sample",alternative="two.sided",strict=TRUE)$n
+nsim<-50
+tlow<-thigh<-meanslow<-meanshigh<-CIuplow<-CIlwlow<-CIuphigh<-CIlwhigh<-NULL
+critlow<-abs(qt(0.025,df=lown-1))
+crithigh<-abs(qt(0.025,df=highn-1))
+
+for(i in 1:nsim){
+  x<-rnorm(lown,mean=d,sd=sd)
+  meanslow[i]<-mean(x)
+  tlow[i]<-t.test(x)$statistic
+  CIuplow[i]<-mean(x)+critlow*sd(x)/sqrt(length(x))
+  CIlwlow[i]<-mean(x)-critlow*sd(x)/sqrt(length(x))
+  x<-rnorm(highn,mean=d,sd=sd)
+  meanshigh[i]<-mean(x)
+  thigh[i]<-t.test(x)$statistic
+  CIuphigh[i]<-mean(x)+crithigh*sd(x)/sqrt(length(x))
+  CIlwhigh[i]<-mean(x)-crithigh*sd(x)/sqrt(length(x))
+}
+
+ 
+siglow<-ifelse(abs(tlow)>abs(critlow),"p<0.05","p>0.05")
+sighigh<-ifelse(abs(thigh)>abs(crithigh),"p<0.05","p>0.05")
+
+summarylow<-data.frame(means=meanslow,significance=siglow, CIupper=CIuplow, CIlower=CIlwlow)
+summaryhigh<-data.frame(index=1:nsim,means=meanshigh,significance=sighigh, CIupper=CIuphigh, CIlower=CIlwhigh)
+
+
+# re-order data by mean effect size
+summarylow<-summarylow[order(summarylow$means), ]
+summarylow$index<-1:nrow(summarylow)
+summaryhigh<-summaryhigh[order(summaryhigh$means), ]
+summaryhigh$index<-1:nrow(summaryhigh)
+
+p_low<-ggplot(summarylow, aes(y=means, x=index,
+                              shape=significance,  
+                              ymax=CIupper, ymin=CIlower)) + 
+  geom_pointrange()+
+  #coord_flip()+
+  geom_point(size=2.5)+
+  scale_shape_manual(values=c(2, 19))+
+  geom_hline(yintercept=20) +
+  theme_bw() + 
+  scale_x_continuous(name = "Sample id")+
+  scale_y_continuous(name = "means",limits=c(-200,200))+
+  labs(title="Effect 20 ms, SD 150, \n n=25, power=0.10")+
+  #theme(legend.position="none")+
+  theme(legend.position=c(0.8,0.3))+geom_hline(yintercept=0, linetype="dotted")+magnifytext(sze=16)
+
+
+
+p_low_anim<-p_low+transition_time(index)+enter_fade()+exit_fade()+shadow_trail()
+
+p_low_anim
+
+altrenderer <- gifski_renderer(loop=FALSE)
+
+#save:
+anim_save(p_low_anim,file="plownanim.gif", renderer=altrenderer)
+```
+
+## High power situation
+
+```{r typemdemo2}
+p_hi<-ggplot(summaryhigh, aes(y=means, x=index,
+                              shape=significance, ymax=CIupper, ymin=CIlower)) + 
+  geom_pointrange()+
+  #coord_flip()+
+  geom_point(size=2.5)+
+  scale_shape_manual(values=c(2, 19))+
+    scale_x_continuous(name = "Sample id")+ 
+  geom_hline(yintercept=d) +
+  theme_bw() + 
+  scale_y_continuous(name = "means",limits=c(-200,200))+
+  labs(title="Effect 20 ms, SD 150, \n n=350, power=0.80")+
+  theme(legend.position=c(0.8,0.3))+geom_hline(yintercept=0, linetype="dotted")+
+  magnifytext(sze=16)
+
+p_hi_anim<-p_hi+transition_time(index)+enter_fade()+exit_fade()+shadow_trail()
+
+anim_save(p_hi_anim,
+        file="phianim.gif", renderer=altrenderer)
+```
+
+# Confidence intervals plot
+
+```{r  confintapproach}
+library(rstan)
+load("data/lmer_estimates2.Rda")
+dat<-list(N=dim(lmer_estimates2)[1],
+          y=lmer_estimates2$Estimate,
+          sigma=lmer_estimates2$Std..Error)
+
+fit <- stan(file='StanModels/rema.stan', data=dat,
+            iter=2000, chains=4, seed=987654321,
+            control = list(adapt_delta = 0.8))
+
+paramnames<-c("theta","tau")
+#print(fit,pars=paramnames)
+
+params<-extract(fit,pars=paramnames)
+#str(params)
+
+mean_theta<-mean(params$theta)
+lower_theta<-quantile(params$theta,0.025)
+upper_theta<-quantile(params$theta,0.975)
+
+load("data/lmer_estimates3.Rda")
+lmer_estimates3$id<-factor(lmer_estimates3$id,levels=lmer_estimates3$id)
+pd<-position_dodge(0.6)
+p_lmer<-ggplot(lmer_estimates3, aes(x=id, 
+                               y=Estimate,group=id)) +
+    geom_errorbar(aes(ymin=lower, ymax=upper),
+                  width=.25, size=.5, position=pd) +
+      annotate("rect", 
+             xmin = 0, 
+             xmax = 11, 
+             ymin = upper_theta, 
+             ymax = lower_theta,
+             color = "black",alpha=0.2)+
+#    geom_hline(yintercept=mean_theta,
+#               color="black",)+
+    labs(title="Agreement attraction across 10 studies") +
+    xlab("Study id")+
+    ylab("Estimate (log ms)")+
+    geom_hline(yintercept=0,col="gray")+
+    geom_point(position=pd, size=2)+
+    theme_bw()+
+    magnifytext()
+
+p_lmer_anim<-p_lmer+transition_time(as.numeric(id))+enter_fade()+exit_fade()+shadow_trail()
+
+p_lmer_anim
+
+anim_save(p_lmer_anim,
+          file="plmeranim.gif",
+          renderer=altrenderer)
+```
+
+# Meta analysis plot
+
+```{r bayesianmetanalysisapproach}
+load("data/data_model.Rda")
+load("data/data_model_dillonrep.Rda")
+modelquantiles<-quantile(subset(data_model,expt=="model")$posterior,prob=c(0.025,0.975))
+
+expt_dillonrep<-subset(data_model_dillonrep,expt==11)
+#head(expt_dillonrep)
+expt_dillonrep$expt<-factor("repl")
+data_model11studies<-rbind(data_model,expt_dillonrep)
+
+scl<-1
+p_stan<-ggplot(data_model11studies, 
+       aes(x = posterior, y = factor(expt),height = ..density..
+           )) + coord_flip()+
+  geom_density_ridges(scale = scl
+                      ,stat = "density",
+                      rel_min_height = 0.01) +
+  scale_y_discrete(expand = c(0.01, 0)) +
+  scale_x_continuous(expand = c(0.01, 0)) +
+  #scale_fill_brewer(palette = "PuBuGn") +
+  theme_ridges() + theme(legend.position = "none")+
+  xlab("agreement attraction effect")+
+  ylab("expt")+
+  geom_vline(xintercept=0,col="gray")+
+  ## meta-analysis based on frequentist estimates
+  geom_vline(xintercept=-9)+
+  geom_vline(xintercept=-36)+
+    magnifytext(sze=14)
+
+p_stan_anim<-p_stan + transition_states(as.numeric(expt)) +
+  enter_fade() +
+  exit_fade()+
+  shadow_trail()
+
+p_stan_anim
+#animate(p_stan_anim, nframes = 100,
+#        fps=5,
+#        rewind = FALSE,
+#        start_pause = 1)
+
+
+anim_save(p_stan_anim,file="pstananim.gif",renderer=altrenderer)
+```
+
+# Further readings
+
+- Lena A. Jäger, Daniela Mertzen, Julie A. Van Dyke, and Shravan Vasishth. Interference patterns in subject-verb agreement and reflexives revisited: A large-sample study. Journal of Memory and Language, 111, 2020.
+https://www.sciencedirect.com/science/article/pii/S0749596X19300956?via%3Dihub
+- Shravan Vasishth, Daniela Mertzen, Lena A. Jäger, and Andrew Gelman. The statistical significance filter leads to overoptimistic expectations of replicability. Journal of Memory and Language, 103:151-175, 2018.
+https://www.sciencedirect.com/science/article/pii/S0749596X18300640?via%3Dihub
+- Shravan Vasishth and Andrew Gelman. How to embrace variation and accept uncertainty in linguistic and psycholinguistic data analysis. Submitted, 2019. https://psyarxiv.com/zcf8s/
